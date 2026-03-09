@@ -1,0 +1,33 @@
+{
+  "features": [
+    "distance_km",
+    "ngo_members",
+    "expiry_hours_left",
+    "past_success_rate"
+  ],
+  "engineered_features": [
+    "distance_km",
+    "ngo_members",
+    "expiry_hours_left",
+    "past_success_rate",
+    "distance_x_urgency"
+  ],
+  "metrics": {
+    "mse": 0.002704,
+    "rmse": 0.052002,
+    "mae": 0.041351,
+    "r2": 0.790372,
+    "cv_r2_mean": 0.7876,
+    "cv_r2_std": 0.0086
+  },
+  "feature_importance": {
+    "distance_km": 0.3134,
+    "ngo_members": 0.1767,
+    "expiry_hours_left": 0.021,
+    "past_success_rate": 0.3995,
+    "distance_x_urgency": 0.0894
+  },
+  "model_type": "GradientBoostingRegressor",
+  "training_samples": 8000,
+  "test_samples": 2000
+}
