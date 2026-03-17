@@ -1,3 +1,6 @@
-node_modules/ 
-.env 
-models/config/serviceAccountKey.json.json 
+node_modules/
+.env
+models/config/serviceAccountKey.json
+serviceAccountKey.json
+*.log
+.DS_Store
