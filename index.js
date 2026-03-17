@@ -2,6 +2,8 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 require("dotenv").config();
+const admin = require('firebase-admin');
+
 
 // ─── Route Imports (matching your actual folder structure) ───
 const ngoAuthRouter = require("./routes/auth/ngoAuth");  // routes/auth/ngoAuth.js
@@ -14,8 +16,22 @@ const foodRouter = require("./routes/food_donation");
    // routes/food_donation.js
    const fcmRouter = require("./routes/fcmRoutes"); 
 
+   const genaiRouter = require("./routes/genai");  // Add this line
+
+
+   const notificationRouter = require("./routes/notification_route");  // Add this
+
  // Path from your sidebar
-const ngoCrudRouter = require('./routes/ngo');      // Path from your sidebar
+const ngoCrudRouter = require('./routes/ngo');  
+    // Path from your sidebar
+
+ if (!admin.apps.length) {
+  const serviceAccount = require("./serviceAccountKey.json");
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+}
+
 
 
 
@@ -25,18 +41,24 @@ configurePassport();
 
 const PORT = process.env.PORT || 5000;
 
+app.use(express.json());
+
 app.use(ngoAuthRouter); 
 
 // 2. Handles CRUD like /api/ngo/:id
 app.use('/api/ngo', ngoCrudRouter); 
+app.use("/api/chatbot", genaiRouter);  // Add this line for chatbot
 
-app.use(express.json());
+
+
 app.use(cors());
 app.use("/api/fcm", fcmRouter); 
 
 
 app.use(ngoAuthRouter);
 app.use("/api/ngo", ngoRouter);
+
+app.use(notificationRouter);  // 
 
 app.use(
   session({

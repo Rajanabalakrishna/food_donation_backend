@@ -5,6 +5,9 @@ const jwt = require("jsonwebtoken");
 const NGO = require("../../models/ngoitemSchema");
 const nodemailer = require("nodemailer");
 
+
+
+
 const ngoOtpStore = {};
 
 const generateOTP = () => {
@@ -39,6 +42,7 @@ const sendOTPEmail = async (email, otp) => {
 // ─── 1. NGO SIGN UP (Send OTP) ───
 ngoAuthRouter.post("/api/ngo/signUp", async (req, res) => {
   try {
+    
     const { email, ngoName, password } = req.body;
 
     const existingNgo = await NGO.findOne({
@@ -150,7 +154,18 @@ ngoAuthRouter.post("/api/ngo/verify-otp", async (req, res) => {
 // ─── 3. NGO SIGN IN ───
 ngoAuthRouter.post("/api/ngo/signin", async (req, res) => {
   try {
+        console.log("📥 Sign-in request body:", req.body);
+
     const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        message: "Email and password are required" 
+      });
+    }
+
+    console.log("🔍 Searching for NGO with email:", email);
+
 
     const ngo = await NGO.findOne({ email });
     if (!ngo) {
@@ -168,7 +183,12 @@ ngoAuthRouter.post("/api/ngo/signin", async (req, res) => {
 
     res.json({ token, ...ngo._doc });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+        console.error("🚨 SIGN-IN ERROR:", err);
+    console.error("Stack trace:", err.stack);
+    res.status(500).json({ 
+      error: err.message,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
 

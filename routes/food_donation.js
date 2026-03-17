@@ -69,6 +69,136 @@ async function notifyAllNgos(food, winnerNgoId, winnerNgoName, rankings) {
   }
 }
 
+async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
+  try {
+    const donorLat = foodDonation.location.latitude;
+    const donorLng = foodDonation.location.longitude;
+
+    if (!donorLat || !donorLng || donorLat === 0 || donorLng === 0) {
+      console.log("⚠️ Donation has no valid coordinates. Skipping NGO notification.");
+      return;
+    }
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("📡 SEARCHING NGOs WITHIN", radiusKm, "KM");
+    console.log("   Donation Location:", donorLat, donorLng);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Fetch all active NGOs with valid coordinates
+    const allNgos = await NGO.find({
+      "location.coordinates.latitude": { $exists: true, $ne: 0 },
+      "location.coordinates.longitude": { $exists: true, $ne: 0 },
+      isActive: true,
+    });
+
+    console.log(`📋 Total active NGOs with coordinates: ${allNgos.length}`);
+
+    // Filter NGOs within radius
+    const nearbyNgos = [];
+    for (const ngo of allNgos) {
+      const ngoLat = ngo.location.coordinates.latitude;
+      const ngoLng = ngo.location.coordinates.longitude;
+      const distance = haversineDistanceKm(donorLat, donorLng, ngoLat, ngoLng);
+      
+      if (distance <= radiusKm) {
+        nearbyNgos.push({ ngo, distanceKm: Math.round(distance * 10) / 10 });
+      }
+    }
+
+    console.log(`🏢 NGOs within ${radiusKm}km: ${nearbyNgos.length}`);
+    if (nearbyNgos.length === 0) return;
+
+    let sent = 0, failed = 0, noToken = 0;
+
+    const itemNames = foodDonation.food_items
+      .map((item) => item.name)
+      .slice(0, 3)
+      .join(", ");
+    const extraCount =
+      foodDonation.food_items.length > 3
+        ? ` +${foodDonation.food_items.length - 3} more`
+        : "";
+
+    // Send FCM to each nearby NGO
+    for (const { ngo, distanceKm } of nearbyNgos) {
+      try {
+        // Fetch FCM token for this NGO using their userId
+        const ngoToken = await NgoToken.findOne({ userId: ngo._id.toString() });
+        
+        if (!ngoToken?.fcmToken) {
+          noToken++;
+          console.log(`   ⏭️ ${ngo.ngoName} — no FCM token`);
+          continue;
+        }
+
+        // Send FCM notification
+        await admin.messaging().send({
+          token: ngoToken.fcmToken,
+          notification: {
+            title: "🍽️ New Food Available Nearby!",
+            body: `${foodDonation.event_manager_name} donated ${foodDonation.total_quantity_kg} kg (${itemNames}${extraCount}) — ${distanceKm} km away`,
+          },
+          data: {
+            type: "new_donation_nearby",
+            foodId: foodDonation._id.toString(),
+            donorName: foodDonation.event_manager_name,
+            totalKg: foodDonation.total_quantity_kg.toString(),
+            distanceKm: distanceKm.toString(),
+            latitude: donorLat.toString(),
+            longitude: donorLng.toString(),
+            address: foodDonation.address || "",
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "food_share_channel",
+              sound: "default",
+              clickAction: "FLUTTER_NOTIFICATION_CLICK",
+            },
+          },
+          apns: {
+            payload: { 
+              aps: { 
+                sound: "default", 
+                badge: 1, 
+                "content-available": 1 
+              } 
+            },
+          },
+        });
+
+        sent++;
+        console.log(`   ✅ Notified: ${ngo.ngoName} (${distanceKm} km away)`);
+      } catch (fcmErr) {
+        failed++;
+        if (
+          fcmErr.code === "messaging/registration-token-not-registered" ||
+          fcmErr.code === "messaging/invalid-registration-token"
+        ) {
+          console.log(`   🗑️ Removing stale token for: ${ngo.ngoName}`);
+          await NgoToken.deleteOne({ userId: ngo._id.toString() });
+        } else {
+          console.error(`   ❌ Failed for ${ngo.ngoName}:`, fcmErr.message);
+        }
+      }
+    }
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(`📊 NOTIFICATION SUMMARY`);
+    console.log(`   Nearby NGOs : ${nearbyNgos.length}`);
+    console.log(`   Sent        : ${sent}`);
+    console.log(`   No Token    : ${noToken}`);
+    console.log(`   Failed      : ${failed}`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  } catch (err) {
+    console.error("❌ notifyNearbyNgosOnUpload error:", err.message);
+  }
+}
+
+
+
+
+
 // ════════════════════════════════════════════════
 //  HELPER: Run ML and get winner  ← NEW
 // ════════════════════════════════════════════════
@@ -661,7 +791,9 @@ FoodRouter.post("/api/food_donate", async (req, res) => {
     foodDonation = await foodDonation.save();
 
     // Notify nearby NGOs about new donation
-    notifyNearbyNgos(foodDonation, 50).catch(console.error);
+    //notifyNearbyNgos(foodDonation, 50).catch(console.error);
+    notifyNearbyNgosOnUpload(foodDonation, 50).catch(console.error);
+
 
     res.status(200).json({
       message: "Food donation details uploaded successfully",
