@@ -44,38 +44,7 @@ const sendOTPEmail = async (email, otp) => {
 
 
 
-authRouter.get("/auth/google", (req, res, next) => {
-    console.log("Backend: Starting Google Auth Flow...");
-    next();
-}, passport.authenticate("google", {
-    scope: ["profile", "email"],
-    prompt: "select_account" // Forces the account selection screen
-}));
 
-authRouter.get("/auth/google/callback", 
-    passport.authenticate("google", { 
-        session: false, 
-        failureRedirect: "/auth/google/failure" 
-    }), 
-    (req, res) => {
-        try {
-            const token = jwt.sign({ id: req.user._id }, "passwordKey");
-            // We pass the user document as a stringified JSON
-            const userData = encodeURIComponent(JSON.stringify(req.user));
-            
-            console.log(`Backend: Auth Success for ${req.user.email}. Redirecting to app...`);
-            res.redirect(`myfoodapp://login-success?token=${token}&user=${userData}`);
-        } catch (e) {
-            res.status(500).json({ error: e.message });
-        }
-    }
-);
-
-authRouter.get("/auth/google/failure", (req, res) => {
-    res.status(401).send("Google Authentication Failed.");
-});
-
-// --- API ROUTES ---
 
 
 
