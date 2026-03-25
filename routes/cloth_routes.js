@@ -433,6 +433,41 @@ ClothRouter.post("/api/cloth/book", async (req, res) => {
   }
 });
 
+// ─── PUT: Update Order Status ───
+ClothRouter.put("/api/cloth/order/:id", async (req, res) => {
+  try {
+    const cloth = await ClothDonation.findById(req.params.id);
+    if (!cloth) return res.status(404).json({ message: "Not found" });
+
+    cloth.is_ordered = true;
+    cloth.ordered_at = new Date();
+    cloth.booking_status = "picked_up";
+    await cloth.save();
+
+    res.json({ success: true, cloth });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── PUT: Update Delivery Status ───
+ClothRouter.put("/api/cloth/deliver/:id", async (req, res) => {
+  try {
+    const cloth = await ClothDonation.findById(req.params.id);
+    if (!cloth) return res.status(404).json({ message: "Not found" });
+
+    cloth.is_delivered = true;
+    cloth.delivered_at = new Date();
+    cloth.booking_status = "delivered";
+    await cloth.save();
+
+    res.json({ success: true, cloth });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // ════════════════════════════════════════════════
 //  GET: Single cloth donation detail
 // ════════════════════════════════════════════════

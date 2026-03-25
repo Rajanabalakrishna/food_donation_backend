@@ -30,6 +30,24 @@ const ngoSchema = new Schema(
       enum: ["ngo", "trust", "ashram", "foundation", "society", "other"],
       default: "ngo",
     },
+
+     teamMembers: [
+      {
+        name: { type: String, required: true },
+        age: { type: Number, required: true },
+        gender: { type: String, enum: ['male', 'female', 'other'] },
+        phone: { type: String, required: true },
+        email: { type: String },
+        role: { type: String, required: true },
+        address: { type: String },
+        memberType: { 
+          type: String, 
+          enum: ['member', 'volunteer'], 
+          required: true 
+        },
+        joinedDate: { type: Date, default: Date.now },
+      },
+    ],
     location: {
       address: { type: String, required: true },
       city: { type: String, required: true },

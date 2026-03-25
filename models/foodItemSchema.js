@@ -41,16 +41,31 @@ const foodDonationSchema = new mongoose.Schema(
     ordered_by: { type: String, default: null },
     ordered_by_name: { type: String, default: "" },
     ordered_at: { type: Date, default: null },
+    is_delivered: { type: Boolean, default: false },
+    delivered_at: { type: Date, default: null },
+
+
+
     order_status: {
       type: String,
-      enum: ["available", "booked", "picked_up", "delivered", "cancelled"],
+      enum: ["available", "pending_allocation", "booked", "picked_up", "delivered", "cancelled"],
       default: "available",
     },
+
+    // ── Booking window fields ──
+    booking_requests: [
+      {
+        ngo_id: { type: String },
+        ngo_name: { type: String },
+        requested_at: { type: Date, default: Date.now },
+      },
+    ],
+    booking_window_ends: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// ─── FIXED Pre-save hook ───
+// ─── Pre-save hook ───
 foodDonationSchema.pre("save", function () {
   if (
     this.location &&
@@ -59,15 +74,12 @@ foodDonationSchema.pre("save", function () {
     this.location.latitude !== 0 &&
     this.location.longitude !== 0
   ) {
-    // Set GeoJSON point [longitude, latitude] — GeoJSON order!
     this.location.point = {
       type: "Point",
       coordinates: [this.location.longitude, this.location.latitude],
     };
-    // CRITICAL: Tell Mongoose this nested path changed
     this.markModified("location.point");
   }
-  
 });
 
 // ─── 2dsphere index ───
@@ -75,7 +87,6 @@ foodDonationSchema.index({ "location.point": "2dsphere" });
 
 const FoodDonation = mongoose.model("FoodDonation", foodDonationSchema);
 
-// ─── Force index creation on startup ───
 FoodDonation.createIndexes()
   .then(() => console.log("✅ 2dsphere index ensured on FoodDonation"))
   .catch((err) => console.error("❌ Index creation error:", err.message));

@@ -151,6 +151,64 @@ ngoAuthRouter.post("/api/ngo/verify-otp", async (req, res) => {
   }
 });
 
+ngoAuthRouter.post("/api/ngo/:ngoId/add-member", async (req, res) => {
+  try {
+    const { ngoId } = req.params;
+    const { name, age, gender, phone, email, role, address, memberType } = req.body;
+
+    if (!name || !age || !phone || !role || !memberType) {
+      return res.status(400).json({ 
+        message: "Name, age, phone, role, and memberType are required" 
+      });
+    }
+
+    const ngo = await NGO.findById(ngoId);
+    if (!ngo) {
+      return res.status(404).json({ message: "NGO not found" });
+    }
+
+    // Initialize teamMembers array if it doesn't exist
+    if (!ngo.teamMembers) {
+      ngo.teamMembers = [];
+    }
+
+    // Add new member
+    ngo.teamMembers.push({
+      name,
+      age,
+      gender,
+      phone,
+      email: email || "",
+      role,
+      address: address || "",
+      memberType,
+      joinedDate: new Date(),
+    });
+
+    // Update member counts
+    if (memberType === 'member') {
+      ngo.totalMembers += 1;
+    } else if (memberType === 'volunteer') {
+      ngo.totalVolunteers += 1;
+    }
+
+    await ngo.save();
+
+    console.log(`✅ Team member added to NGO: ${ngo.ngoName}`);
+    console.log(`   Members: ${ngo.totalMembers}, Volunteers: ${ngo.totalVolunteers}`);
+
+    res.status(200).json({
+      success: true,
+      message: "Team member added successfully",
+      totalMembers: ngo.totalMembers,
+      totalVolunteers: ngo.totalVolunteers,
+    });
+  } catch (err) {
+    console.error("❌ Add member error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── 3. NGO SIGN IN ───
 ngoAuthRouter.post("/api/ngo/signin", async (req, res) => {
   try {

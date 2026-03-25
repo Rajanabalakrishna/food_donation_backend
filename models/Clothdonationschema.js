@@ -11,6 +11,9 @@ const clothItemSchema = new mongoose.Schema({
     enum: ["XS", "S", "M", "L", "XL", "XXL", "Kids", "Free Size"],
     required: true,
   },
+    ordered_at: { type: Date, default: null },
+    delivered_at: { type: Date, default: null },
+
   age_years: {
     type: String,
     enum: ["Less than 1 year", "1-2 years", "2-3 years", "3-5 years", "5+ years"],
@@ -55,13 +58,19 @@ const clothDonationSchema = new mongoose.Schema(
     booked_by: { type: String, default: null },
     booked_by_name: { type: String, default: "" },
     booked_at: { type: Date, default: null },
+    
+    // ─── NEW FIELDS ───
+    is_ordered: { type: Boolean, default: false },
+    ordered_at: { type: Date, default: null },
+    is_delivered: { type: Boolean, default: false },
+    delivered_at: { type: Date, default: null },
+    
     booking_status: {
       type: String,
       enum: ["available", "booked", "picked_up", "delivered", "cancelled"],
       default: "available",
     },
 
-    // ML booking pool (same pattern as food)
     booking_requests: [
       {
         ngo_id: { type: String },
@@ -72,6 +81,7 @@ const clothDonationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
 
 // Pre-save: set GeoJSON point
 clothDonationSchema.pre("save", function () {

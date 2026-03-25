@@ -4,3 +4,4 @@ models/config/serviceAccountKey.json
 serviceAccountKey.json
 *.log
 .DS_Store
+.vercel

@@ -61,4 +61,14 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+// Add this route to your existing routes/ngo.js file
+
+// Add team member
+
+
 module.exports = router;
+
+
+
+
+

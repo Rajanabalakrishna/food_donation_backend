@@ -5,13 +5,16 @@ const auth = require("../middlewares/auth");
 const NGO = require("../models/ngoitemSchema");
 const admin = require("../models/config/firebaseAdmin");
 const { DonorToken, NgoToken } = require("../models/FCMModels");
-const axios = require("axios"); // ← NEW
+const axios = require("axios");
 const bcrypt = require("bcryptjs");
 
-const ML_SERVICE_URL = "http://localhost:5001"; // ← NEW
+const { addFoodToNotion } = require('../services/notionService');
+
+const ML_SERVICE_URL = "http://localhost:5001";
+const BOOKING_WINDOW_MINUTES = 5; // NGOs get 5 minutes to compete
 
 // ════════════════════════════════════════════════
-//  HELPER: Haversine distance  ← NEW
+//  HELPER: Haversine distance
 // ════════════════════════════════════════════════
 function haversineDistanceKm(lat1, lon1, lat2, lon2) {
   const toRad = (deg) => (deg * Math.PI) / 180;
@@ -28,7 +31,7 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2) {
 }
 
 // ════════════════════════════════════════════════
-//  HELPER: Notify all requesting NGOs  ← NEW
+//  HELPER: Notify all requesting NGOs
 // ════════════════════════════════════════════════
 async function notifyAllNgos(food, winnerNgoId, winnerNgoName, rankings) {
   const requests = food.booking_requests || [];
@@ -69,6 +72,9 @@ async function notifyAllNgos(food, winnerNgoId, winnerNgoName, rankings) {
   }
 }
 
+// ════════════════════════════════════════════════
+//  HELPER: Notify nearby NGOs on new donation upload
+// ════════════════════════════════════════════════
 async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
   try {
     const donorLat = foodDonation.location.latitude;
@@ -84,7 +90,6 @@ async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
     console.log("   Donation Location:", donorLat, donorLng);
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Fetch all active NGOs with valid coordinates
     const allNgos = await NGO.find({
       "location.coordinates.latitude": { $exists: true, $ne: 0 },
       "location.coordinates.longitude": { $exists: true, $ne: 0 },
@@ -93,13 +98,12 @@ async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
 
     console.log(`📋 Total active NGOs with coordinates: ${allNgos.length}`);
 
-    // Filter NGOs within radius
     const nearbyNgos = [];
     for (const ngo of allNgos) {
       const ngoLat = ngo.location.coordinates.latitude;
       const ngoLng = ngo.location.coordinates.longitude;
       const distance = haversineDistanceKm(donorLat, donorLng, ngoLat, ngoLng);
-      
+
       if (distance <= radiusKm) {
         nearbyNgos.push({ ngo, distanceKm: Math.round(distance * 10) / 10 });
       }
@@ -119,19 +123,16 @@ async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
         ? ` +${foodDonation.food_items.length - 3} more`
         : "";
 
-    // Send FCM to each nearby NGO
     for (const { ngo, distanceKm } of nearbyNgos) {
       try {
-        // Fetch FCM token for this NGO using their userId
         const ngoToken = await NgoToken.findOne({ userId: ngo._id.toString() });
-        
+
         if (!ngoToken?.fcmToken) {
           noToken++;
           console.log(`   ⏭️ ${ngo.ngoName} — no FCM token`);
           continue;
         }
 
-        // Send FCM notification
         await admin.messaging().send({
           token: ngoToken.fcmToken,
           notification: {
@@ -157,12 +158,12 @@ async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
             },
           },
           apns: {
-            payload: { 
-              aps: { 
-                sound: "default", 
-                badge: 1, 
-                "content-available": 1 
-              } 
+            payload: {
+              aps: {
+                sound: "default",
+                badge: 1,
+                "content-available": 1,
+              },
             },
           },
         });
@@ -195,12 +196,8 @@ async function notifyNearbyNgosOnUpload(foodDonation, radiusKm = 50) {
   }
 }
 
-
-
-
-
 // ════════════════════════════════════════════════
-//  HELPER: Run ML and get winner  ← NEW
+//  HELPER: Run ML and get winner
 // ════════════════════════════════════════════════
 async function runMLAndAllocate(food) {
   const requests = food.booking_requests || [];
@@ -284,121 +281,127 @@ async function runMLAndAllocate(food) {
 }
 
 // ════════════════════════════════════════════════
-//  HELPER: Notify nearby NGOs about new donation
-//  (your existing function - unchanged)
+//  HELPER: Finalize booking after window closes
 // ════════════════════════════════════════════════
-async function notifyNearbyNgos(foodDonation, radiusKm = 50) {
+async function finalizeBooking(food) {
   try {
-    const donorLat = foodDonation.location.latitude;
-    const donorLng = foodDonation.location.longitude;
+    // Re-fetch to get latest booking_requests
+    food = await FoodDonation.findById(food._id);
+    if (!food || food.is_ordered) return; // already finalized
 
-    if (!donorLat || !donorLng || donorLat === 0 || donorLng === 0) {
-      console.log("⚠️ Donation has no valid coordinates. Skipping NGO notification.");
+    const totalRequesters = (food.booking_requests || []).length;
+    if (totalRequesters === 0) {
+      // No one requested — reset the window
+      food.booking_window_ends = null;
+      await food.save();
+      console.log(`⚠️ No requests for ${food.event_manager_name} — window reset`);
       return;
     }
 
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("📡 SEARCHING NGOs WITHIN", radiusKm, "KM");
-    console.log("   Donation Location:", donorLat, donorLng);
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(`\n⏰ BOOKING WINDOW CLOSED for: ${food.event_manager_name}`);
+    console.log(`   Total competitors: ${totalRequesters}`);
 
-    const allNgos = await NGO.find({
-      "location.coordinates.latitude": { $exists: true, $ne: 0 },
-      "location.coordinates.longitude": { $exists: true, $ne: 0 },
-      isActive: true,
-    });
-
-    console.log(`📋 Total active NGOs with coordinates: ${allNgos.length}`);
-
-    const nearbyNgos = [];
-    for (const ngo of allNgos) {
-      const ngoLat = ngo.location.coordinates.latitude;
-      const ngoLng = ngo.location.coordinates.longitude;
-      const distance = haversineDistanceKm(donorLat, donorLng, ngoLat, ngoLng);
-      if (distance <= radiusKm) {
-        nearbyNgos.push({ ngo, distanceKm: Math.round(distance * 10) / 10 });
-      }
+    // Run ML allocation
+    let winnerId, winnerName, rankings;
+    try {
+      const result = await runMLAndAllocate(food);
+      winnerId = result.winnerId;
+      winnerName = result.winnerName;
+      rankings = result.rankings;
+    } catch (mlErr) {
+      console.error("❌ ML failed, using first requester:", mlErr.message);
+      winnerId = food.booking_requests[0].ngo_id;
+      winnerName = food.booking_requests[0].ngo_name;
+      rankings = null;
     }
 
-    console.log(`🏢 NGOs within ${radiusKm}km: ${nearbyNgos.length}`);
-    if (nearbyNgos.length === 0) return;
+    // Finalize booking
+    food.is_ordered = true;
+    food.ordered_by = winnerId;
+    food.ordered_by_name = winnerName;
+    food.ordered_at = new Date();
+    food.order_status = "booked";
+    await food.save();
 
-    let sent = 0, failed = 0, noToken = 0;
+    console.log(`\n🏆 WINNER: ${winnerName}`);
+    console.log(`📦 Food: ${food.event_manager_name} (${food.total_quantity_kg} kg)`);
 
-    const itemNames = foodDonation.food_items
-      .map((item) => item.name)
-      .slice(0, 3)
-      .join(", ");
-    const extraCount =
-      foodDonation.food_items.length > 3
-        ? ` +${foodDonation.food_items.length - 3} more`
-        : "";
-
-    for (const { ngo, distanceKm } of nearbyNgos) {
-      try {
-        const ngoToken = await NgoToken.findOne({ userId: ngo._id.toString() });
-        if (!ngoToken?.fcmToken) {
-          noToken++;
-          console.log(`   ⏭️ ${ngo.ngoName} — no FCM token`);
-          continue;
-        }
-
+    // Notify donor
+    try {
+      const donorToken = await DonorToken.findOne({ userId: food.user_id });
+      if (donorToken?.fcmToken) {
         await admin.messaging().send({
-          token: ngoToken.fcmToken,
+          token: donorToken.fcmToken,
           notification: {
-            title: "🍽️ New Food Available Nearby!",
-            body: `${foodDonation.event_manager_name} donated ${foodDonation.total_quantity_kg} kg (${itemNames}${extraCount}) — ${distanceKm} km away`,
+            title: "🎉 Your food has been booked!",
+            body: `${winnerName} has booked your donation of ${food.total_quantity_kg} kg.`,
           },
           data: {
-            type: "new_donation_nearby",
-            foodId: foodDonation._id.toString(),
-            donorName: foodDonation.event_manager_name,
-            totalKg: foodDonation.total_quantity_kg.toString(),
-            distanceKm: distanceKm.toString(),
-            latitude: donorLat.toString(),
-            longitude: donorLng.toString(),
-            address: foodDonation.address || "",
+            type: "food_booked",
+            foodId: food._id.toString(),
+            ngoName: winnerName,
           },
           android: {
             priority: "high",
-            notification: {
-              channelId: "food_share_channel",
-              sound: "default",
-              clickAction: "FLUTTER_NOTIFICATION_CLICK",
-            },
+            notification: { channelId: "food_donations", sound: "default" },
           },
-          apns: {
-            payload: { aps: { sound: "default", badge: 1, "content-available": 1 } },
-          },
+          apns: { payload: { aps: { sound: "default", badge: 1 } } },
         });
-
-        sent++;
-        console.log(`   ✅ Notified: ${ngo.ngoName} (${distanceKm} km away)`);
-      } catch (fcmErr) {
-        failed++;
-        if (
-          fcmErr.code === "messaging/registration-token-not-registered" ||
-          fcmErr.code === "messaging/invalid-registration-token"
-        ) {
-          console.log(`   🗑️ Removing stale token for: ${ngo.ngoName}`);
-          await NgoToken.deleteOne({ userId: ngo._id.toString() });
-        } else {
-          console.error(`   ❌ Failed for ${ngo.ngoName}:`, fcmErr.message);
-        }
+        console.log(`✅ Donor notified: ${food.user_id}`);
       }
+    } catch (fcmErr) {
+      console.error("❌ FCM donor notify error:", fcmErr.message);
     }
 
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log(`📊 NOTIFICATION SUMMARY`);
-    console.log(`   Nearby NGOs : ${nearbyNgos.length}`);
-    console.log(`   Sent        : ${sent}`);
-    console.log(`   No Token    : ${noToken}`);
-    console.log(`   Failed      : ${failed}`);
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    // Notify all requesting NGOs
+    if (totalRequesters > 1) {
+      await notifyAllNgos(food, winnerId, winnerName, rankings);
+    } else {
+      // Single requester — notify them they got it
+      try {
+        const ngoToken = await NgoToken.findOne({ userId: winnerId });
+        if (ngoToken?.fcmToken) {
+          await admin.messaging().send({
+            token: ngoToken.fcmToken,
+            notification: {
+              title: "🏆 Food booked successfully!",
+              body: `You've been allocated ${food.event_manager_name}'s donation of ${food.total_quantity_kg} kg.`,
+            },
+            data: {
+              type: "allocation_won",
+              foodId: food._id.toString(),
+            },
+            android: { priority: "high" },
+            apns: { payload: { aps: { sound: "default", badge: 1 } } },
+          });
+        }
+      } catch (e) {
+        console.error("FCM single winner notify error:", e.message);
+      }
+    }
   } catch (err) {
-    console.error("❌ notifyNearbyNgos error:", err.message);
+    console.error("❌ finalizeBooking error:", err.message);
   }
 }
+
+// ════════════════════════════════════════════════
+//  CRON: Check for expired booking windows every 30s
+// ════════════════════════════════════════════════
+setInterval(async () => {
+  try {
+    const pendingFoods = await FoodDonation.find({
+      is_ordered: false,
+      booking_window_ends: { $lte: new Date() },
+      "booking_requests.0": { $exists: true },
+    });
+
+    for (const food of pendingFoods) {
+      await finalizeBooking(food);
+    }
+  } catch (err) {
+    console.error("❌ Booking window cron error:", err.message);
+  }
+}, 30 * 1000); // Check every 30 seconds
 
 // ═══════════════════════════════════════════════
 // ─── NGO: GET ALL AVAILABLE FOOD (not booked) ───
@@ -517,7 +520,7 @@ FoodRouter.get("/api/food/:id", async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════
-// ─── BOOK FOOD — Instant ML Allocation  ← UPDATED
+// ─── BOOK FOOD — Booking Window + ML Allocation ───
 // ═══════════════════════════════════════════════
 FoodRouter.post("/api/food/book", async (req, res) => {
   try {
@@ -557,91 +560,101 @@ FoodRouter.post("/api/food/book", async (req, res) => {
       ngo_name: ngoName,
       requested_at: new Date(),
     });
+
+    // Start booking window on FIRST request
+    if (food.booking_requests.length === 1) {
+      food.booking_window_ends = new Date(
+        Date.now() + BOOKING_WINDOW_MINUTES * 60 * 1000
+      );
+      console.log(
+        `\n⏱️ BOOKING WINDOW STARTED for: ${food.event_manager_name} — closes at ${food.booking_window_ends.toISOString()}`
+      );
+    }
+
     await food.save();
 
     const totalRequesters = food.booking_requests.length;
+    const timeLeftMs = food.booking_window_ends - Date.now();
+    const timeLeftSec = Math.max(0, Math.ceil(timeLeftMs / 1000));
+
     console.log(
-      `\n📥 Book request — Food: ${food.event_manager_name} | NGO: ${ngoName} | Total requesters: ${totalRequesters}`
+      `\n📥 Book request — Food: ${food.event_manager_name} | NGO: ${ngoName} | Total: ${totalRequesters} | Window closes in: ${timeLeftSec}s`
     );
 
-    // ── Run ML allocation immediately ──
-    let winnerId, winnerName, rankings;
-    try {
-      const result = await runMLAndAllocate(food);
-      winnerId = result.winnerId;
-      winnerName = result.winnerName;
-      rankings = result.rankings;
-    } catch (mlErr) {
-      console.error("❌ ML failed, using first requester:", mlErr.message);
-      winnerId = food.booking_requests[0].ngo_id;
-      winnerName = food.booking_requests[0].ngo_name;
-      rankings = null;
+    // If window already expired (edge case), finalize immediately
+    if (timeLeftMs <= 0) {
+      await finalizeBooking(food);
+
+      // Re-fetch to get updated state
+      const updatedFood = await FoodDonation.findById(foodId);
+      const iWon = updatedFood.ordered_by === ngoId;
+
+      return res.json({
+        success: true,
+        allocated: true,
+        won: iWon,
+        message: iWon
+          ? "Food booked successfully!"
+          : `ML selected ${updatedFood.ordered_by_name} as the better match.`,
+        winner: {
+          ngoId: updatedFood.ordered_by,
+          ngoName: updatedFood.ordered_by_name,
+        },
+        totalCompetitors: totalRequesters,
+      });
     }
 
-    // ── Finalize booking ──
-    food.is_ordered = true;
-    food.ordered_by = winnerId;
-    food.ordered_by_name = winnerName;
-    food.ordered_at = new Date();
-    food.order_status = "booked";
-    await food.save();
-
-    console.log(`\n🏆 WINNER: ${winnerName}`);
-    console.log(`📦 Food: ${food.event_manager_name} (${food.total_quantity_kg} kg)`);
-
-    // ── Notify donor ──
-    try {
-      const donorToken = await DonorToken.findOne({ userId: food.user_id });
-      if (donorToken?.fcmToken) {
-        await admin.messaging().send({
-          token: donorToken.fcmToken,
-          notification: {
-            title: "🎉 Your food has been booked!",
-            body: `${winnerName} has booked your donation of ${food.total_quantity_kg} kg.`,
-          },
-          data: {
-            type: "food_booked",
-            foodId: food._id.toString(),
-            ngoName: winnerName,
-          },
-          android: {
-            priority: "high",
-            notification: { channelId: "food_donations", sound: "default" },
-          },
-          apns: { payload: { aps: { sound: "default", badge: 1 } } },
-        });
-        console.log(`✅ Donor notified: ${food.user_id}`);
-      }
-    } catch (fcmErr) {
-      console.error("❌ FCM donor notify error:", fcmErr.message);
-    }
-
-    // ── Notify all requesting NGOs (only if multiple) ──
-    if (totalRequesters > 1) {
-      await notifyAllNgos(food, winnerId, winnerName, rankings);
-    }
-
-    // ── Build response ──
-    const iWon = winnerId === ngoId;
-    const myRank = rankings?.find((r) => r.ngo_id === ngoId);
-
+    // Window still open — tell NGO their request is queued
     return res.json({
       success: true,
-      allocated: true,
-      won: iWon,
-      message: iWon
-        ? totalRequesters === 1
-          ? "Food booked successfully!"
-          : `ML selected you as the best match! Score: ${myRank?.score ?? "N/A"}`
-        : `ML selected ${winnerName} as the better match. Score: ${myRank?.score ?? "N/A"}`,
-      winner: { ngoId: winnerId, ngoName: winnerName },
-      myScore: myRank?.score ?? null,
-      myInterpretation: myRank?.interpretation ?? null,
+      queued: true,
+      message: `Request received! ML allocation will run in ${timeLeftSec} seconds when the booking window closes.`,
       totalCompetitors: totalRequesters,
-      rankings: rankings ?? null,
+      bookingWindowEnds: food.booking_window_ends.toISOString(),
+      timeLeftSeconds: timeLeftSec,
     });
   } catch (err) {
     console.error("❌ Book error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════
+// ─── GET: Check booking status for a food item ───
+// ═══════════════════════════════════════════════
+FoodRouter.get("/api/food/booking-status/:foodId", async (req, res) => {
+  try {
+    const food = await FoodDonation.findById(req.params.foodId);
+    if (!food)
+      return res.status(404).json({ message: "Food donation not found" });
+
+    if (food.is_ordered) {
+      return res.json({
+        status: "allocated",
+        winner: {
+          ngoId: food.ordered_by,
+          ngoName: food.ordered_by_name,
+        },
+        totalCompetitors: (food.booking_requests || []).length,
+        allocatedAt: food.ordered_at,
+      });
+    }
+
+    if (food.booking_window_ends) {
+      const timeLeftMs = food.booking_window_ends - Date.now();
+      return res.json({
+        status: timeLeftMs > 0 ? "waiting" : "processing",
+        totalCompetitors: (food.booking_requests || []).length,
+        bookingWindowEnds: food.booking_window_ends.toISOString(),
+        timeLeftSeconds: Math.max(0, Math.ceil(timeLeftMs / 1000)),
+      });
+    }
+
+    return res.json({
+      status: "available",
+      totalCompetitors: 0,
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -750,9 +763,8 @@ FoodRouter.get("/api/food/debug/geo", async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════
-// ─── EXISTING DONOR ROUTES (UNCHANGED) ───
+// ─── DONOR: Upload food donation ───
 // ═══════════════════════════════════════════════
-
 FoodRouter.post("/api/food_donate", async (req, res) => {
   try {
     const {
@@ -790,10 +802,12 @@ FoodRouter.post("/api/food_donate", async (req, res) => {
 
     foodDonation = await foodDonation.save();
 
-    // Notify nearby NGOs about new donation
-    //notifyNearbyNgos(foodDonation, 50).catch(console.error);
-    notifyNearbyNgosOnUpload(foodDonation, 50).catch(console.error);
+    addFoodToNotion(foodDonation).catch(err => {
+      console.error('Notion sync failed (non-blocking):', err.message);
+    });
 
+    // Notify nearby NGOs about new donation
+    notifyNearbyNgosOnUpload(foodDonation, 50).catch(console.error);
 
     res.status(200).json({
       message: "Food donation details uploaded successfully",
@@ -853,6 +867,218 @@ FoodRouter.post("/create-direct", async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 });
+
+// ═══════════════════════════════════════════════
+// ─── MARK AS DELIVERED + DELETE FROM DB ───
+// ═══════════════════════════════════════════════
+FoodRouter.post("/api/food/mark-delivered-and-delete", async (req, res) => {
+  try {
+    const { foodId } = req.body;
+
+    if (!foodId) {
+      return res.status(400).json({ message: "foodId is required" });
+    }
+
+    const food = await FoodDonation.findById(foodId);
+    if (!food) {
+      return res.status(404).json({ message: "Food donation not found" });
+    }
+
+    // Record delivery timestamp
+    const deliveredAt = new Date();
+    const deliveryRecord = {
+      foodId: food._id.toString(),
+      userId: food.user_id,
+      eventManagerName: food.event_manager_name,
+      foodItems: food.food_items,
+      totalQuantityKg: food.total_quantity_kg,
+      address: food.address,
+      phoneNumber: food.phone_number,
+      orderedBy: food.ordered_by || null,
+      orderedByName: food.ordered_by_name || null,
+      createdAt: food.createdAt,
+      deliveredAt: deliveredAt,
+    };
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("✅ DONATION DELIVERED & DELETING FROM DB");
+    console.log(`   Food ID     : ${food._id}`);
+    console.log(`   Donor       : ${food.event_manager_name}`);
+    console.log(`   Quantity    : ${food.total_quantity_kg} kg`);
+    console.log(`   Delivered At: ${deliveredAt.toISOString()}`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // ── Notify the donor via FCM ──
+    try {
+      const donorToken = await DonorToken.findOne({ userId: food.user_id });
+      if (donorToken?.fcmToken) {
+        await admin.messaging().send({
+          token: donorToken.fcmToken,
+          notification: {
+            title: "🎉 Donation Delivered!",
+            body: `Your donation of ${food.total_quantity_kg} kg has been successfully delivered at ${deliveredAt.toLocaleTimeString()}.`,
+          },
+          data: {
+            type: "donation_delivered",
+            foodId: food._id.toString(),
+            deliveredAt: deliveredAt.toISOString(),
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "food_donations",
+              sound: "default",
+            },
+          },
+          apns: {
+            payload: {
+              aps: { sound: "default", badge: 1 },
+            },
+          },
+        });
+        console.log(`   📱 Donor notified: ${food.user_id}`);
+      }
+    } catch (fcmErr) {
+      console.error("   ❌ FCM donor notify error:", fcmErr.message);
+    }
+
+    // ── Notify the NGO (if booked) via FCM ──
+    if (food.ordered_by) {
+      try {
+        const ngoToken = await NgoToken.findOne({ userId: food.ordered_by });
+        if (ngoToken?.fcmToken) {
+          await admin.messaging().send({
+            token: ngoToken.fcmToken,
+            notification: {
+              title: "📦 Pickup Completed!",
+              body: `Donation from ${food.event_manager_name} (${food.total_quantity_kg} kg) has been marked as delivered.`,
+            },
+            data: {
+              type: "pickup_completed",
+              foodId: food._id.toString(),
+              deliveredAt: deliveredAt.toISOString(),
+            },
+            android: { priority: "high" },
+            apns: { payload: { aps: { sound: "default", badge: 1 } } },
+          });
+          console.log(`   📱 NGO notified: ${food.ordered_by_name}`);
+        }
+      } catch (fcmErr) {
+        console.error("   ❌ FCM NGO notify error:", fcmErr.message);
+      }
+    }
+
+    // ── Delete the donation from the database ──
+    await FoodDonation.findByIdAndDelete(foodId);
+    console.log(`   🗑️ Donation deleted from DB: ${foodId}`);
+
+    res.status(200).json({
+      success: true,
+      message: "Donation marked as delivered and removed from database!",
+      deliveredAt: deliveredAt.toISOString(),
+      deliveryRecord: deliveryRecord,
+    });
+  } catch (err) {
+    console.error("❌ Mark delivered & delete error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ═══════════════════════════════════════════════
+// ─── MARK FOOD AS DELIVERED ───
+// ═══════════════════════════════════════════════
+FoodRouter.post("/api/food/mark-delivered", async (req, res) => {
+  try {
+    const { foodId } = req.body;
+
+    if (!foodId) {
+      return res.status(400).json({ message: "foodId is required" });
+    }
+
+    const food = await FoodDonation.findById(foodId);
+    if (!food) return res.status(404).json({ message: "Food donation not found" });
+
+    if (!food.is_ordered) {
+      return res.status(400).json({ message: "Food must be booked before marking as delivered" });
+    }
+
+    if (food.is_delivered) {
+      return res.status(400).json({ message: "Food is already marked as delivered" });
+    }
+
+    food.is_delivered = true;
+    food.delivered_at = new Date();
+    food.order_status = "delivered";
+    await food.save();
+
+    res.json({
+      success: true,
+      message: "Food marked as delivered successfully!",
+      foodDonation: food,
+    });
+  } catch (err) {
+    console.error("❌ Mark delivered error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════
+// ─── ONE-TIME: Migrate existing docs to add is_delivered field ───
+// ═══════════════════════════════════════════════
+FoodRouter.post("/api/food/migrate-delivery", async (req, res) => {
+  try {
+    console.log("🔄 Starting is_delivered migration...");
+
+    const result = await FoodDonation.updateMany(
+      { is_delivered: { $exists: false } },
+      {
+        $set: {
+          is_delivered: false,
+          delivered_at: null,
+        },
+      }
+    );
+
+    console.log(`✅ Migration complete! Modified: ${result.modifiedCount}`);
+
+    res.json({
+      success: true,
+      message: `Migration complete! Modified ${result.modifiedCount} documents.`,
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    console.error("❌ Migration error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// GET /api/food/donor-donations/:donorId
+
+FoodRouter.get('/api/food/donor-donations/:donorId', async (req, res) => {
+  try {
+    const { donorId } = req.params;
+
+    const donations = await FoodDonation.find({ user_id: donorId })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: donations.length,
+      donations,
+    });
+  } catch (error) {
+    console.error('Error fetching donor donations:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch donor donations',
+    });
+  }
+});
+
+
 
 FoodRouter.get("/api/donations/:userId", async (req, res) => {
   try {

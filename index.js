@@ -14,9 +14,13 @@ const session = require("express-session");
 const authRouter = require("./routes/auth");              // routes/auth.js ← NOT auth/auth
 const foodRouter = require("./routes/food_donation");  
    // routes/food_donation.js
-   const fcmRouter = require("./routes/fcmRoutes"); 
+   const fcmRouter = require("./routes/fcmRoutes");
+
+const clothRouter = require("./routes/cloth_routes");
+; // adjust path to match your file name
 
    const genaiRouter = require("./routes/genai");  // Add this line
+  
 
 
    const notificationRouter = require("./routes/notification_route");  // Add this
@@ -49,7 +53,7 @@ app.use(ngoAuthRouter);
 app.use('/api/ngo', ngoCrudRouter); 
 app.use("/api/chatbot", genaiRouter);  // Add this line for chatbot
 
-
+app.use(clothRouter);
 
 app.use(cors());
 app.use("/api/fcm", fcmRouter); 
