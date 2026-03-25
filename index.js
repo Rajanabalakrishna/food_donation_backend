@@ -41,7 +41,7 @@ const ngoCrudRouter = require('./routes/ngo');
 
 const app = express();
 
-configurePassport();
+//configurePassport();
 
 const PORT = process.env.PORT || 5000;
 
