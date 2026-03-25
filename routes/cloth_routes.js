@@ -1,6 +1,6 @@
 const express = require("express");
 const ClothRouter = express.Router();
-const ClothDonation = require("../models/ClothdonationSchema");
+const ClothDonation = require("../models/Clothdonationschema");
 const NGO = require("../models/ngoitemSchema");
 const admin = require("../models/config/firebaseAdmin");
 const { DonorToken, NgoToken } = require("../models/FCMModels");
