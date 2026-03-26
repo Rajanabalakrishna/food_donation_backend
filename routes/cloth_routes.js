@@ -372,6 +372,8 @@ ClothRouter.post("/api/cloth/book", async (req, res) => {
     cloth.booked_by = winnerId;
     cloth.booked_by_name = winnerName;
     cloth.booked_at = new Date();
+    cloth.is_ordered = true; 
+    cloth.ordered_at = new Date(); 
     cloth.booking_status = "booked";
     await cloth.save();
 
